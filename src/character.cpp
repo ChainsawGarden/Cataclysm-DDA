@@ -238,6 +238,7 @@ static const trait_id trait_DOWN( "DOWN" );
 static const trait_id trait_ELECTRORECEPTORS( "ELECTRORECEPTORS" );
 static const trait_id trait_ELFA_FNV( "ELFA_FNV" );
 static const trait_id trait_ELFA_NV( "ELFA_NV" );
+static const trait_id trait_FASTLEARNER( "FASTLEARNER" );
 static const trait_id trait_FEL_NV( "FEL_NV" );
 static const trait_id trait_GILLS( "GILLS" );
 static const trait_id trait_GILLS_CEPH( "GILLS_CEPH" );
@@ -284,6 +285,7 @@ static const trait_id trait_SHOUT2( "SHOUT2" );
 static const trait_id trait_SHOUT3( "SHOUT3" );
 static const trait_id trait_SLIMESPAWNER( "SLIMESPAWNER" );
 static const trait_id trait_SLIMY( "SLIMY" );
+static const trait_id trait_SLOWLEARNER( "SLOWLEARNER" );
 static const trait_id trait_STRONGSTOMACH( "STRONGSTOMACH" );
 static const trait_id trait_THRESH_CEPHALOPOD( "THRESH_CEPHALOPOD" );
 static const trait_id trait_THRESH_INSECT( "THRESH_INSECT" );
@@ -330,6 +332,9 @@ static const std::string flag_SWIMMABLE( "SWIMMABLE" );
 static const std::string flag_SWIM_GOGGLES( "SWIM_GOGGLES" );
 static const std::string flag_UNDERSIZE( "UNDERSIZE" );
 static const std::string flag_USE_UPS( "USE_UPS" );
+
+static const mtype_id mon_player_blob( "mon_player_blob" );
+static const mtype_id mon_shadow_snake( "mon_shadow_snake" );
 
 // *INDENT-OFF*
 Character::Character() :
@@ -1543,6 +1548,8 @@ void Character::process_turn()
     }
 
     Creature::process_turn();
+
+    enchantment_cache.activate_passive( *this );
 }
 
 void Character::recalc_hp()
@@ -1741,6 +1748,17 @@ void Character::check_item_encumbrance_flag()
     if( update_required ) {
         reset_encumbrance();
     }
+}
+
+bool Character::natural_attack_restricted_on( body_part bp ) const
+{
+    for( auto &i : worn ) {
+        if( i.covers( bp ) && !i.has_flag( "ALLOWS_NATURAL_ATTACKS" ) && !i.has_flag( "SEMITANGIBLE" ) &&
+            !i.has_flag( "PERSONAL" ) && !i.has_flag( "AURA" ) ) {
+            return true;
+        }
+    }
+    return false;
 }
 
 std::vector<bionic_id> Character::get_bionics() const
@@ -3422,14 +3440,14 @@ int Character::extraEncumbrance( const layer_level level, const int bp ) const
 hint_rating Character::rate_action_change_side( const item &it ) const
 {
     if( !is_worn( it ) ) {
-        return HINT_IFFY;
+        return hint_rating::iffy;
     }
 
     if( !it.is_sided() ) {
-        return HINT_CANT;
+        return hint_rating::cant;
     }
 
-    return HINT_GOOD;
+    return hint_rating::good;
 }
 
 bool Character::change_side( item &it, bool interactive )
@@ -6295,8 +6313,6 @@ bool Character::is_invisible() const
 {
     return (
                has_effect_with_flag( flag_EFFECT_INVISIBLE ) ||
-               has_active_bionic( str_bio_cloak ) ||
-               has_active_bionic( str_bio_night ) ||
                is_wearing_active_optcloak() ||
                has_trait( trait_DEBUG_CLOAK ) ||
                has_artifact_with( AEP_INVISIBLE )
@@ -7945,6 +7961,20 @@ void Character::recalculate_enchantment_cache()
             }
         }
     }
+
+    for( const bionic &bio : *my_bionics ) {
+        const bionic_id &bid = bio.id;
+        if( bid->toggled && !bio.powered ) {
+            continue;
+        }
+
+        for( const enchantment_id &ench_id : bid->enchantments ) {
+            const enchantment &ench = ench_id.obj();
+            if( ench.is_active( *this ) ) {
+                enchantment_cache.force_add( ench );
+            }
+        }
+    }
 }
 
 double Character::calculate_by_enchantment( double modify, enchantment::mod value,
@@ -8263,6 +8293,256 @@ void Character::on_hit( Creature *source, body_part /*bp_hit*/,
                         float /*difficulty*/, dealt_projectile_attack const *const /*proj*/ )
 {
     enchantment_cache.cast_hit_me( *this, source );
+}
+
+/*
+    Where damage to character is actually applied to hit body parts
+    Might be where to put bleed stuff rather than in player::deal_damage()
+ */
+void Character::apply_damage( Creature *source, body_part hurt, int dam, const bool bypass_med )
+{
+    if( is_dead_state() || has_trait( trait_DEBUG_NODMG ) ) {
+        // don't do any more damage if we're already dead
+        // Or if we're debugging and don't want to die
+        return;
+    }
+
+    hp_part hurtpart = bp_to_hp( hurt );
+    if( hurtpart == num_hp_parts ) {
+        debugmsg( "Wacky body part hurt!" );
+        hurtpart = hp_torso;
+    }
+
+    mod_pain( dam / 2 );
+
+    const int dam_to_bodypart = std::min( dam, hp_cur[hurtpart] );
+
+    hp_cur[hurtpart] -= dam_to_bodypart;
+    g->events().send<event_type::character_takes_damage>( getID(), dam_to_bodypart );
+
+    if( !weapon.is_null() && !as_player()->can_wield( weapon ).success() &&
+        can_unwield( weapon ).success() ) {
+        add_msg_if_player( _( "You are no longer able to wield your %s and drop it!" ),
+                           weapon.display_name() );
+        put_into_vehicle_or_drop( *this, item_drop_reason::tumbling, { weapon } );
+        i_rem( &weapon );
+    }
+    if( has_effect( effect_mending, hurt ) && ( source == nullptr || !source->is_hallucination() ) ) {
+        effect &e = get_effect( effect_mending, hurt );
+        float remove_mend = dam / 20.0f;
+        e.mod_duration( -e.get_max_duration() * remove_mend );
+    }
+
+    if( dam > get_painkiller() ) {
+        on_hurt( source );
+    }
+
+    if( !bypass_med ) {
+        // remove healing effects if damaged
+        int remove_med = roll_remainder( dam / 5.0f );
+        if( remove_med > 0 && has_effect( effect_bandaged, hurt ) ) {
+            remove_med -= reduce_healing_effect( effect_bandaged, remove_med, hurt );
+        }
+        if( remove_med > 0 && has_effect( effect_disinfected, hurt ) ) {
+            reduce_healing_effect( effect_disinfected, remove_med, hurt );
+        }
+    }
+}
+
+dealt_damage_instance Character::deal_damage( Creature *source, body_part bp,
+        const damage_instance &d )
+{
+    if( has_trait( trait_DEBUG_NODMG ) ) {
+        return dealt_damage_instance();
+    }
+
+    //damage applied here
+    dealt_damage_instance dealt_dams = Creature::deal_damage( source, bp, d );
+    //block reduction should be by applied this point
+    int dam = dealt_dams.total_damage();
+
+    // TODO: Pre or post blit hit tile onto "this"'s location here
+    if( dam > 0 && g->u.sees( pos() ) ) {
+        g->draw_hit_player( *this, dam );
+
+        if( is_player() && source ) {
+            //monster hits player melee
+            SCT.add( point( posx(), posy() ),
+                     direction_from( point_zero, point( posx() - source->posx(), posy() - source->posy() ) ),
+                     get_hp_bar( dam, get_hp_max( player::bp_to_hp( bp ) ) ).first, m_bad,
+                     body_part_name( bp ), m_neutral );
+        }
+    }
+
+    // handle snake artifacts
+    if( has_artifact_with( AEP_SNAKES ) && dam >= 6 ) {
+        const int snakes = dam / 6;
+        int spawned = 0;
+        for( int i = 0; i < snakes; i++ ) {
+            if( monster *const snake = g->place_critter_around( mon_shadow_snake, pos(), 1 ) ) {
+                snake->friendly = -1;
+                spawned++;
+            }
+        }
+        if( spawned == 1 ) {
+            add_msg( m_warning, _( "A snake sprouts from your body!" ) );
+        } else if( spawned >= 2 ) {
+            add_msg( m_warning, _( "Some snakes sprout from your body!" ) );
+        }
+    }
+
+    // And slimespawners too
+    if( ( has_trait( trait_SLIMESPAWNER ) ) && ( dam >= 10 ) && one_in( 20 - dam ) ) {
+        if( monster *const slime = g->place_critter_around( mon_player_blob, pos(), 1 ) ) {
+            slime->friendly = -1;
+            add_msg_if_player( m_warning, _( "Slime is torn from you, and moves on its own!" ) );
+        }
+    }
+
+    //Acid blood effects.
+    bool u_see = g->u.sees( *this );
+    int cut_dam = dealt_dams.type_damage( DT_CUT );
+    if( source && has_trait( trait_ACIDBLOOD ) && !one_in( 3 ) &&
+        ( dam >= 4 || cut_dam > 0 ) && ( rl_dist( g->u.pos(), source->pos() ) <= 1 ) ) {
+        if( is_player() ) {
+            add_msg( m_good, _( "Your acidic blood splashes %s in mid-attack!" ),
+                     source->disp_name() );
+        } else if( u_see ) {
+            add_msg( _( "%1$s's acidic blood splashes on %2$s in mid-attack!" ),
+                     disp_name(), source->disp_name() );
+        }
+        damage_instance acidblood_damage;
+        acidblood_damage.add_damage( DT_ACID, rng( 4, 16 ) );
+        if( !one_in( 4 ) ) {
+            source->deal_damage( this, bp_arm_l, acidblood_damage );
+            source->deal_damage( this, bp_arm_r, acidblood_damage );
+        } else {
+            source->deal_damage( this, bp_torso, acidblood_damage );
+            source->deal_damage( this, bp_head, acidblood_damage );
+        }
+    }
+
+    int recoil_mul = 100;
+    switch( bp ) {
+        case bp_eyes:
+            if( dam > 5 || cut_dam > 0 ) {
+                const time_duration minblind = std::max( 1_turns, 1_turns * ( dam + cut_dam ) / 10 );
+                const time_duration maxblind = std::min( 5_turns, 1_turns * ( dam + cut_dam ) / 4 );
+                add_effect( effect_blind, rng( minblind, maxblind ) );
+            }
+            break;
+        case bp_torso:
+            break;
+        case bp_hand_l:
+        // Fall through to arms
+        case bp_arm_l:
+        // Hit to arms/hands are really bad to our aim
+        case bp_hand_r:
+        // Fall through to arms
+        case bp_arm_r:
+            recoil_mul = 200;
+            break;
+        case bp_foot_l:
+        // Fall through to legs
+        case bp_leg_l:
+            break;
+        case bp_foot_r:
+        // Fall through to legs
+        case bp_leg_r:
+            break;
+        case bp_mouth:
+        // Fall through to head damage
+        case bp_head:
+            // TODO: Some daze maybe? Move drain?
+            break;
+        default:
+            debugmsg( "Wacky body part hit!" );
+    }
+
+    // TODO: Scale with damage in a way that makes sense for power armors, plate armor and naked skin.
+    recoil += recoil_mul * weapon.volume() / 250_ml;
+    recoil = std::min( MAX_RECOIL, recoil );
+    //looks like this should be based off of dealt damages, not d as d has no damage reduction applied.
+    // Skip all this if the damage isn't from a creature. e.g. an explosion.
+    if( source != nullptr ) {
+        if( source->has_flag( MF_GRABS ) && !source->is_hallucination() &&
+            !source->has_effect( effect_grabbing ) ) {
+            /** @EFFECT_DEX increases chance to avoid being grabbed, if DEX>STR */
+
+            /** @EFFECT_STR increases chance to avoid being grabbed, if STR>DEX */
+            if( has_grab_break_tec() && get_grab_resist() > 0 &&
+                ( get_dex() > get_str() ? rng( 0, get_dex() ) : rng( 0, get_str() ) ) >
+                rng( 0, 10 ) ) {
+                if( has_effect( effect_grabbed ) ) {
+                    add_msg_if_player( m_warning, _( "You are being grabbed by %s, but you bat it away!" ),
+                                       source->disp_name() );
+                } else {
+                    add_msg_player_or_npc( m_info, _( "You are being grabbed by %s, but you break its grab!" ),
+                                           _( "<npcname> are being grabbed by %s, but they break its grab!" ),
+                                           source->disp_name() );
+                }
+            } else {
+                int prev_effect = get_effect_int( effect_grabbed );
+                add_effect( effect_grabbed, 2_turns, bp_torso, false, prev_effect + 2 );
+                source->add_effect( effect_grabbing, 2_turns );
+                add_msg_player_or_npc( m_bad, _( "You are grabbed by %s!" ), _( "<npcname> is grabbed by %s!" ),
+                                       source->disp_name() );
+            }
+        }
+    }
+
+    if( get_option<bool>( "FILTHY_WOUNDS" ) ) {
+        int sum_cover = 0;
+        for( const item &i : worn ) {
+            if( i.covers( bp ) && i.is_filthy() ) {
+                sum_cover += i.get_coverage();
+            }
+        }
+
+        // Chance of infection is damage (with cut and stab x4) * sum of coverage on affected body part, in percent.
+        // i.e. if the body part has a sum of 100 coverage from filthy clothing,
+        // each point of damage has a 1% change of causing infection.
+        if( sum_cover > 0 ) {
+            const int cut_type_dam = dealt_dams.type_damage( DT_CUT ) + dealt_dams.type_damage( DT_STAB );
+            const int combined_dam = dealt_dams.type_damage( DT_BASH ) + ( cut_type_dam * 4 );
+            const int infection_chance = ( combined_dam * sum_cover ) / 100;
+            if( x_in_y( infection_chance, 100 ) ) {
+                if( has_effect( effect_bite, bp ) ) {
+                    add_effect( effect_bite, 40_minutes, bp, true );
+                } else if( has_effect( effect_infected, bp ) ) {
+                    add_effect( effect_infected, 25_minutes, bp, true );
+                } else {
+                    add_effect( effect_bite, 1_turns, bp, true );
+                }
+                add_msg_if_player( _( "Filth from your clothing has implanted deep in the wound." ) );
+            }
+        }
+    }
+
+    on_hurt( source );
+    return dealt_dams;
+}
+
+int Character::reduce_healing_effect( const efftype_id &eff_id, int remove_med, body_part hurt )
+{
+    effect &e = get_effect( eff_id, hurt );
+    int intensity = e.get_intensity();
+    if( remove_med < intensity ) {
+        if( eff_id == effect_bandaged ) {
+            add_msg_if_player( m_bad, _( "Bandages on your %s were damaged!" ), body_part_name( hurt ) );
+        } else  if( eff_id == effect_disinfected ) {
+            add_msg_if_player( m_bad, _( "You got some filth on your disinfected %s!" ),
+                               body_part_name( hurt ) );
+        }
+    } else {
+        if( eff_id == effect_bandaged ) {
+            add_msg_if_player( m_bad, _( "Bandages on your %s were destroyed!" ), body_part_name( hurt ) );
+        } else  if( eff_id == effect_disinfected ) {
+            add_msg_if_player( m_bad, _( "Your %s is no longer disinfected!" ), body_part_name( hurt ) );
+        }
+    }
+    e.mod_duration( -6_hours * remove_med );
+    return intensity;
 }
 
 void Character::heal( body_part healed, int dam )
@@ -8868,9 +9148,8 @@ void Character::assign_activity( const player_activity &act, bool allow_resume )
         activity = act;
     }
 
-    if( activity.rooted() ) {
-        rooted_message();
-    }
+    activity.start( *this );
+
     if( is_npc() ) {
         cancel_stashed_activity();
         npc *guy = dynamic_cast<npc *>( this );
@@ -9530,4 +9809,89 @@ int Character::heartrate_bpm() const
     const int max_heartbeat = average_heartbeat * 3.5;
     heartbeat = clamp( heartbeat, average_heartbeat, max_heartbeat );
     return heartbeat;
+}
+
+void Character::on_worn_item_washed( const item &it )
+{
+    if( is_worn( it ) ) {
+        morale->on_worn_item_washed( it );
+    }
+}
+
+void Character::on_item_wear( const item &it )
+{
+    morale->on_item_wear( it );
+}
+
+void Character::on_item_takeoff( const item &it )
+{
+    morale->on_item_takeoff( it );
+}
+
+void Character::on_effect_int_change( const efftype_id &eid, int intensity, body_part bp )
+{
+    // Adrenaline can reduce perceived pain (or increase it when you enter comedown).
+    // See @ref get_perceived_pain()
+    if( eid == effect_adrenaline ) {
+        // Note that calling this does no harm if it wasn't changed.
+        on_stat_change( "perceived_pain", get_perceived_pain() );
+    }
+
+    morale->on_effect_int_change( eid, intensity, bp );
+}
+
+void Character::on_mutation_gain( const trait_id &mid )
+{
+    morale->on_mutation_gain( mid );
+    magic.on_mutation_gain( mid, *this );
+    update_type_of_scent( mid );
+    recalculate_enchantment_cache(); // mutations can have enchantments
+}
+
+void Character::on_mutation_loss( const trait_id &mid )
+{
+    morale->on_mutation_loss( mid );
+    magic.on_mutation_loss( mid );
+    update_type_of_scent( mid, false );
+    recalculate_enchantment_cache(); // mutations can have enchantments
+}
+
+void Character::on_stat_change( const std::string &stat, int value )
+{
+    morale->on_stat_change( stat, value );
+}
+
+bool Character::has_opposite_trait( const trait_id &flag ) const
+{
+    for( const trait_id &i : flag->cancels ) {
+        if( has_trait( i ) ) {
+            return true;
+        }
+    }
+    for( const std::pair<const trait_id, trait_data> &mut : my_mutations ) {
+        for( const trait_id &canceled_trait : mut.first->cancels ) {
+            if( canceled_trait == flag ) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+int Character::adjust_for_focus( int amount ) const
+{
+    int effective_focus = focus_pool;
+    if( has_trait( trait_FASTLEARNER ) ) {
+        effective_focus += 15;
+    }
+    if( has_active_bionic( bio_memory ) ) {
+        effective_focus += 10;
+    }
+    if( has_trait( trait_SLOWLEARNER ) ) {
+        effective_focus -= 15;
+    }
+    effective_focus += ( get_int_base() - get_option<int>( "INT_BASED_LEARNING_BASE_VALUE" ) ) *
+                       get_option<int>( "INT_BASED_LEARNING_FOCUS_ADJUSTMENT" );
+    double tmp = amount * ( effective_focus / 100.0 );
+    return roll_remainder( tmp );
 }
