@@ -75,6 +75,7 @@ static const bionic_id bio_eye_optic( "bio_eye_optic" );
 static const bionic_id bio_memory( "bio_memory" );
 static const bionic_id bio_watch( "bio_watch" );
 
+static const efftype_id effect_alarm_clock( "alarm_clock" );
 static const efftype_id effect_contacts( "contacts" );
 static const efftype_id effect_depressants( "depressants" );
 static const efftype_id effect_happy( "happy" );
@@ -105,6 +106,7 @@ static const trait_id trait_THICK_SCALES( "THICK_SCALES" );
 static const trait_id trait_WEBBED( "WEBBED" );
 static const trait_id trait_WHISKERS( "WHISKERS" );
 static const trait_id trait_WHISKERS_RAT( "WHISKERS_RAT" );
+static const trait_id trait_MASOCHIST( "MASOCHIST" );
 
 static const std::string flag_FIX_FARSIGHT( "FIX_FARSIGHT" );
 
@@ -941,7 +943,11 @@ void avatar::wake_up()
         if( calendar::turn - get_effect( effect_sleep ).get_start_time() > 2_hours ) {
             print_health();
         }
-        if( has_effect( effect_slept_through_alarm ) ) {
+        // alarm was set and player hasn't slept through the alarm.
+        if( has_effect( effect_alarm_clock ) && !has_effect( effect_slept_through_alarm ) ) {
+            add_msg( _( "It looks like you woke up before your alarm." ) );
+            remove_effect( effect_alarm_clock );
+        } else if( has_effect( effect_slept_through_alarm ) ) {
             if( has_bionic( bio_watch ) ) {
                 add_msg( m_warning, _( "It looks like you've slept through your internal alarm…" ) );
             } else {
@@ -1017,7 +1023,14 @@ int avatar::calc_focus_equilibrium( bool ignore_pain ) const
     // Factor in perceived pain, since it's harder to rest your mind while your body hurts.
     // Cenobites don't mind, though
     if( !ignore_pain && !has_trait( trait_CENOBITE ) ) {
-        eff_morale = eff_morale - get_perceived_pain();
+        int perceived_pain = get_perceived_pain();
+        if( has_trait( trait_MASOCHIST ) ) {
+            if( perceived_pain > 20 ) {
+                eff_morale = eff_morale - ( perceived_pain - 20 );
+            }
+        } else {
+            eff_morale = eff_morale - perceived_pain;
+        }
     }
 
     if( eff_morale < -99 ) {
@@ -1248,9 +1261,6 @@ void avatar::reset_stats()
             mod_dodge_bonus( 4 );
         }
     }
-
-    // Hit-related effects
-    mod_hit_bonus( mabuff_tohit_bonus() + weapon.type->m_to_hit );
 
     // Apply static martial arts buffs
     martial_arts_data.ma_static_effects( *this );
@@ -1518,9 +1528,8 @@ bool avatar::wield( item &target )
 
     // Query whether to draw an item from a holster when attempting to wield the holster
     if( target.get_use( "holster" ) && !target.contents.empty() ) {
-        //~ %1$s: weapon name, %2$s: holster name
-        if( query_yn( pgettext( "holster", "Draw %1$s from %2$s?" ), target.get_contained().tname(),
-                      target.tname() ) ) {
+        //~ %1$s: weapon name
+        if( query_yn( pgettext( "holster", "Draw from %1$s?" ), target.tname() ) ) {
             invoke_item( &target );
             return false;
         }

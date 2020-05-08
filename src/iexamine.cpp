@@ -98,7 +98,6 @@ static const activity_id ACT_BUILD( "ACT_BUILD" );
 static const activity_id ACT_CLEAR_RUBBLE( "ACT_CLEAR_RUBBLE" );
 static const activity_id ACT_CRACKING( "ACT_CRACKING" );
 static const activity_id ACT_FORAGE( "ACT_FORAGE" );
-static const activity_id ACT_PICKUP( "ACT_PICKUP" );
 static const activity_id ACT_PLANT_SEED( "ACT_PLANT_SEED" );
 
 static const efftype_id effect_earphones( "earphones" );
@@ -114,7 +113,6 @@ static const skill_id skill_cooking( "cooking" );
 static const skill_id skill_electronics( "electronics" );
 static const skill_id skill_fabrication( "fabrication" );
 static const skill_id skill_firstaid( "firstaid" );
-static const skill_id skill_lockpick( "lockpick" );
 static const skill_id skill_mechanics( "mechanics" );
 static const skill_id skill_survival( "survival" );
 
@@ -149,7 +147,6 @@ static const mtype_id mon_spider_widow_giant_s( "mon_spider_widow_giant_s" );
 static const bionic_id bio_ears( "bio_ears" );
 static const bionic_id bio_fingerhack( "bio_fingerhack" );
 static const bionic_id bio_lighter( "bio_lighter" );
-static const bionic_id bio_lockpick( "bio_lockpick" );
 static const bionic_id bio_painkiller( "bio_painkiller" );
 static const bionic_id bio_power_storage( "bio_power_storage" );
 static const bionic_id bio_power_storage_mkII( "bio_power_storage_mkII" );
@@ -622,20 +619,37 @@ void iexamine::vending( player &p, const tripoint &examp )
         popup( _( "You need some money on a cash card to buy things." ) );
     }
 
-    const int padding_x  = std::max( 0, TERMX - FULL_SCREEN_WIDTH ) / 4;
-    const int padding_y  = std::max( 0, TERMY - FULL_SCREEN_HEIGHT ) / 6;
-    const int window_h   = FULL_SCREEN_HEIGHT + std::max( 0, TERMY - FULL_SCREEN_HEIGHT ) * 2 / 3;
-    const int window_w   = FULL_SCREEN_WIDTH + std::max( 0, TERMX - FULL_SCREEN_WIDTH ) / 2;
-    const int w_items_w  = window_w / 2;
-    const int w_info_w   = window_w - w_items_w;
-    const int list_lines = window_h - 4; // minus for header and footer
-
+    int w_items_w = 0;
+    int w_info_w = 0;
+    int list_lines = 0;
+    int lines_above = 0;
+    int lines_below = 0;
     constexpr int first_item_offset = 3; // header size
 
-    catacurses::window const w = catacurses::newwin( window_h, w_items_w, point( padding_x,
-                                 padding_y ) );
-    catacurses::window const w_item_info = catacurses::newwin( window_h, w_info_w,
-                                           point( padding_x + w_items_w, padding_y ) );
+    catacurses::window w;
+    catacurses::window w_item_info;
+
+    ui_adaptor ui;
+    ui.on_screen_resize( [&]( ui_adaptor & ui ) {
+        const int padding_x  = std::max( 0, TERMX - FULL_SCREEN_WIDTH ) / 4;
+        const int padding_y  = std::max( 0, TERMY - FULL_SCREEN_HEIGHT ) / 6;
+        const int window_h   = FULL_SCREEN_HEIGHT + std::max( 0, TERMY - FULL_SCREEN_HEIGHT ) * 2 / 3;
+        const int window_w   = FULL_SCREEN_WIDTH + std::max( 0, TERMX - FULL_SCREEN_WIDTH ) / 2;
+        w_items_w  = window_w / 2;
+        w_info_w   = window_w - w_items_w;
+        list_lines = window_h - 4; // minus for header and footer
+
+        lines_above = list_lines / 2;                  // lines above the selector
+        lines_below = list_lines / 2 + list_lines % 2; // lines below the selector
+
+        w = catacurses::newwin( window_h, w_items_w,
+                                point( padding_x, padding_y ) );
+        w_item_info = catacurses::newwin( window_h, w_info_w,
+                                          point( padding_x + w_items_w, padding_y ) );
+
+        ui.position( point( padding_x, padding_y ), point( window_w, window_h ) );
+    } );
+    ui.mark_resize();
 
     bool used_machine = false;
     input_context ctxt( "VENDING_MACHINE" );
@@ -652,7 +666,7 @@ void iexamine::vending( player &p, const tripoint &examp )
     for( auto it = std::begin( vend_items ); it != std::end( vend_items ); ++it ) {
         // |# {name}|
         // 123      4
-        item_map[utf8_truncate( it->tname(), static_cast<size_t>( w_items_w - 4 ) )].push_back( it );
+        item_map[it->tname()].push_back( it );
     }
 
     // Next, put pointers to the pairs in the map in a vector to allow indexing.
@@ -662,14 +676,8 @@ void iexamine::vending( player &p, const tripoint &examp )
         item_list.emplace_back( &pair );
     }
 
-    const int lines_above = list_lines / 2;                  // lines above the selector
-    const int lines_below = list_lines / 2 + list_lines % 2; // lines below the selector
-
-    // FIXME: temporarily disable redrawing of lower UIs before this UI is migrated to `ui_adaptor`
-    ui_adaptor ui( ui_adaptor::disable_uis_below {} );
-
     int cur_pos = 0;
-    for( ;; ) {
+    ui.on_redraw( [&]( const ui_adaptor & ) {
         const int num_items = item_list.size();
         const int page_size = std::min( num_items, list_lines );
 
@@ -722,6 +730,16 @@ void iexamine::vending( player &p, const tripoint &examp )
                                                 static_cast<size_t>( w_info_w - 4 ) );
         mvwprintw( w_item_info, point_east, "<%s>", name );
         wrefresh( w_item_info );
+    } );
+
+    for( ;; ) {
+        ui_manager::redraw();
+
+        const int num_items = item_list.size();
+
+        // Item info
+        auto &cur_items = item_list[static_cast<size_t>( cur_pos )]->second;
+        auto &cur_item  = cur_items.back();
 
         const std::string &action = ctxt.handle_input();
         if( action == "DOWN" ) {
@@ -1649,7 +1667,7 @@ void iexamine::flower_poppy( player &p, const tripoint &examp )
         return;
     }
 
-    int resist = p.get_env_resist( bp_mouth );
+    int resist = p.get_env_resist( bodypart_id( "mouth" ) );
 
     if( resist < 10 ) {
         // Can't smell the flowers with a gas mask on!
@@ -1665,8 +1683,8 @@ void iexamine::flower_poppy( player &p, const tripoint &examp )
         add_msg( m_bad, _( "You fall asleep…" ) );
         p.fall_asleep( 2_hours );
         add_msg( m_bad, _( "Your legs are covered in the poppy's roots!" ) );
-        p.apply_damage( nullptr, bp_leg_l, 4 );
-        p.apply_damage( nullptr, bp_leg_r, 4 );
+        p.apply_damage( nullptr, bodypart_id( "leg_l" ), 4 );
+        p.apply_damage( nullptr, bodypart_id( "leg_r" ), 4 );
         p.moves -= 50;
     }
 
@@ -1692,8 +1710,8 @@ void iexamine::flower_cactus( player &p, const tripoint &examp )
 
     if( one_in( 6 ) ) {
         add_msg( m_bad, _( "The cactus' nettles sting you!" ) );
-        p.apply_damage( nullptr, bp_arm_l, 4 );
-        p.apply_damage( nullptr, bp_arm_r, 4 );
+        p.apply_damage( nullptr, bodypart_id( "arm_l" ), 4 );
+        p.apply_damage( nullptr, bodypart_id( "arm_r" ), 4 );
     }
 
     g->m.furn_set( examp, f_null );
@@ -2725,7 +2743,7 @@ void iexamine::fireplace( player &p, const tripoint &examp )
             return;
         }
         case 2: {
-            if( g->m.add_field( examp, fd_fire, 1 ) ) {
+            if( !g->m.get_field( examp, fd_fire ) && g->m.add_field( examp, fd_fire, 1 ) ) {
                 p.mod_power_level( -bio_lighter->power_activate );
                 p.mod_moves( -to_moves<int>( 1_seconds ) );
             } else {
@@ -3301,13 +3319,17 @@ void iexamine::tree_maple_tapped( player &p, const tripoint &examp )
     map_stack items = g->m.i_at( examp );
     if( !items.empty() ) {
         item &it = items.only_item();
-        if( it.is_bucket() || it.is_watertight_container() ) {
+        if( it.will_spill() || it.is_watertight_container() ) {
             container = &it;
 
-            if( !it.is_container_empty() && it.contents.front().typeId() == "maple_sap" ) {
-                has_sap = true;
-                charges = it.contents.front().charges;
-            }
+            it.visit_items( [&charges, &has_sap]( const item * it ) {
+                if( it->typeId() == "maple_syrup" ) {
+                    has_sap = true;
+                    charges = it->charges;
+                    return VisitResponse::ABORT;
+                }
+                return VisitResponse::NEXT;
+            } );
         }
     }
 
@@ -3371,9 +3393,8 @@ void iexamine::tree_maple_tapped( player &p, const tripoint &examp )
         }
 
         case REMOVE_CONTAINER: {
-            g->u.assign_activity( ACT_PICKUP );
-            g->u.activity.targets.emplace_back( map_cursor( examp ), container );
-            g->u.activity.values.push_back( 0 );
+            g->u.assign_activity( player_activity( pickup_activity_actor(
+            { item_location( map_cursor( examp ), container ) }, { 0 }, g->u.pos() ) ) );
             return;
         }
 
@@ -3659,9 +3680,8 @@ void iexamine::reload_furniture( player &p, const tripoint &examp )
             auto items = g->m.i_at( examp );
             for( auto &itm : items ) {
                 if( itm.type == ammo ) {
-                    p.assign_activity( ACT_PICKUP );
-                    p.activity.targets.emplace_back( map_cursor( examp ), &itm );
-                    p.activity.values.push_back( 0 );
+                    g->u.assign_activity( player_activity( pickup_activity_actor(
+                    { item_location( map_cursor( examp ), &itm ) }, { 0 }, g->u.pos() ) ) );
                     return;
                 }
             }
@@ -4266,7 +4286,7 @@ void iexamine::ledge( player &p, const tripoint &examp )
             p.moves -= to_moves<int>( 1_seconds + 1_seconds * fall_mod );
             p.setpos( examp );
 
-            if( g->slip_down( true ) ) {
+            if( g->m.has_flag( "UNSTABLE", examp + tripoint_below ) && g->slip_down( true ) ) {
                 return;
             }
 
@@ -4563,7 +4583,10 @@ void iexamine::autodoc( player &p, const tripoint &examp )
                         bionic_to_uninstall.set_flag( flag_IN_CBM );
                         bionic_to_uninstall.set_flag( flag_NO_STERILE );
                         bionic_to_uninstall.set_flag( flag_NO_PACKED );
-                        g->u.i_add( bionic_to_uninstall );
+                        // TODO: refactor this whole bit. adding items to the inventory will
+                        // cause major issues when inv gets removed. this is a shim for now
+                        // in order to reduce lines of change for nested containers.
+                        g->u.inv.push_back( bionic_to_uninstall );
                     }
                 }
             }

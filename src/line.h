@@ -11,6 +11,8 @@
 #include "math_defines.h"
 #include "point.h"
 
+extern bool trigdist;
+
 /** Converts degrees to radians */
 constexpr double DEGREES( double v )
 {
@@ -32,7 +34,7 @@ constexpr double ARCMIN( double v )
 inline double iso_tangent( double distance, double vertex )
 {
     // we can use the cosine formula (a² = b² + c² - 2bc⋅cosθ) to calculate the tangent
-    return std::sqrt( 2 * std::pow( distance, 2 ) * ( 1 - cos( ARCMIN( vertex ) ) ) );
+    return std::sqrt( 2 * std::pow( distance, 2 ) * ( 1 - std::cos( ARCMIN( vertex ) ) ) );
 }
 
 //! This compile-time usable function combines the sign of each (x, y, z) component into a single integer
@@ -147,8 +149,6 @@ std::vector<point> line_to( const point &p1, const point &p2, int t = 0 );
 std::vector<tripoint> line_to( const tripoint &loc1, const tripoint &loc2, int t = 0, int t2 = 0 );
 // sqrt(dX^2 + dY^2)
 
-extern bool trigdist;
-
 inline float trig_dist( const tripoint &loc1, const tripoint &loc2 )
 {
     return std::sqrt( static_cast<double>( ( loc1.x - loc2.x ) * ( loc1.x - loc2.x ) ) +
@@ -163,12 +163,12 @@ inline float trig_dist( const point &loc1, const point &loc2 )
 // Roguelike distance; maximum of dX and dY
 inline int square_dist( const tripoint &loc1, const tripoint &loc2 )
 {
-    const tripoint d = abs( loc1 - loc2 );
+    const tripoint d = ( loc1 - loc2 ).abs();
     return std::max( { d.x, d.y, d.z } );
 }
 inline int square_dist( const point &loc1, const point &loc2 )
 {
-    const point d = abs( loc1 - loc2 );
+    const point d = ( loc1 - loc2 ).abs();
     return std::max( d.x, d.y );
 }
 
@@ -225,7 +225,7 @@ inline FastDistanceApproximation trig_dist_fast( const tripoint &loc1, const tri
 }
 inline FastDistanceApproximation square_dist_fast( const tripoint &loc1, const tripoint &loc2 )
 {
-    const tripoint d = abs( loc1 - loc2 );
+    const tripoint d = ( loc1 - loc2 ).abs();
     return std::max( { d.x, d.y, d.z } );
 }
 inline FastDistanceApproximation rl_dist_fast( const tripoint &loc1, const tripoint &loc2 )

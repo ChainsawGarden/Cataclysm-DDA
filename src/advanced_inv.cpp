@@ -59,7 +59,6 @@
 
 static const activity_id ACT_ADV_INVENTORY( "ACT_ADV_INVENTORY" );
 static const activity_id ACT_DROP( "ACT_DROP" );
-static const activity_id ACT_PICKUP( "ACT_PICKUP" );
 static const activity_id ACT_WEAR( "ACT_WEAR" );
 
 static const trait_id trait_DEBUG_STORAGE( "DEBUG_STORAGE" );
@@ -91,21 +90,21 @@ advanced_inventory::advanced_inventory()
       // panes don't need initialization, they are recalculated immediately
     , squares( {
     {
-        //               hx  hy
-        { AIM_INVENTORY, 25, 2, tripoint_zero,       _( "Inventory" ),          _( "IN" ),  "I", "ITEMS_INVENTORY", AIM_INVENTORY},
-        { AIM_SOUTHWEST, 30, 3, tripoint_south_west, _( "South West" ),         _( "SW" ),  "1", "ITEMS_SW",        AIM_WEST},
-        { AIM_SOUTH,     33, 3, tripoint_south,      _( "South" ),              _( "S" ),   "2", "ITEMS_S",         AIM_SOUTHWEST},
-        { AIM_SOUTHEAST, 36, 3, tripoint_south_east, _( "South East" ),         _( "SE" ),  "3", "ITEMS_SE",        AIM_SOUTH},
-        { AIM_WEST,      30, 2, tripoint_west,       _( "West" ),               _( "W" ),   "4", "ITEMS_W",         AIM_NORTHWEST},
-        { AIM_CENTER,    33, 2, tripoint_zero,       _( "Directly below you" ), _( "DN" ),  "5", "ITEMS_CE",        AIM_CENTER},
-        { AIM_EAST,      36, 2, tripoint_east,       _( "East" ),               _( "E" ),   "6", "ITEMS_E",         AIM_SOUTHEAST},
-        { AIM_NORTHWEST, 30, 1, tripoint_north_west, _( "North West" ),         _( "NW" ),  "7", "ITEMS_NW",        AIM_NORTH},
-        { AIM_NORTH,     33, 1, tripoint_north,      _( "North" ),              _( "N" ),   "8", "ITEMS_N",         AIM_NORTHEAST},
-        { AIM_NORTHEAST, 36, 1, tripoint_north_east, _( "North East" ),         _( "NE" ),  "9", "ITEMS_NE",        AIM_EAST},
-        { AIM_DRAGGED,   25, 1, tripoint_zero,       _( "Grabbed Vehicle" ),    _( "GR" ),  "D", "ITEMS_DRAGGED_CONTAINER", AIM_DRAGGED},
-        { AIM_ALL,       22, 3, tripoint_zero,       _( "Surrounding area" ),   _( "AL" ),  "A", "ITEMS_AROUND",    AIM_ALL},
-        { AIM_CONTAINER, 22, 1, tripoint_zero,       _( "Container" ),          _( "CN" ),  "C", "ITEMS_CONTAINER", AIM_CONTAINER},
-        { AIM_WORN,      25, 3, tripoint_zero,       _( "Worn Items" ),         _( "WR" ),  "W", "ITEMS_WORN",      AIM_WORN}
+        //               pos in window
+        { AIM_INVENTORY, point( 25, 2 ), tripoint_zero,       _( "Inventory" ),          _( "IN" ),  "I", "ITEMS_INVENTORY", AIM_INVENTORY},
+        { AIM_SOUTHWEST, point( 30, 3 ), tripoint_south_west, _( "South West" ),         _( "SW" ),  "1", "ITEMS_SW",        AIM_WEST},
+        { AIM_SOUTH,     point( 33, 3 ), tripoint_south,      _( "South" ),              _( "S" ),   "2", "ITEMS_S",         AIM_SOUTHWEST},
+        { AIM_SOUTHEAST, point( 36, 3 ), tripoint_south_east, _( "South East" ),         _( "SE" ),  "3", "ITEMS_SE",        AIM_SOUTH},
+        { AIM_WEST,      point( 30, 2 ), tripoint_west,       _( "West" ),               _( "W" ),   "4", "ITEMS_W",         AIM_NORTHWEST},
+        { AIM_CENTER,    point( 33, 2 ), tripoint_zero,       _( "Directly below you" ), _( "DN" ),  "5", "ITEMS_CE",        AIM_CENTER},
+        { AIM_EAST,      point( 36, 2 ), tripoint_east,       _( "East" ),               _( "E" ),   "6", "ITEMS_E",         AIM_SOUTHEAST},
+        { AIM_NORTHWEST, point( 30, 1 ), tripoint_north_west, _( "North West" ),         _( "NW" ),  "7", "ITEMS_NW",        AIM_NORTH},
+        { AIM_NORTH,     point( 33, 1 ), tripoint_north,      _( "North" ),              _( "N" ),   "8", "ITEMS_N",         AIM_NORTHEAST},
+        { AIM_NORTHEAST, point( 36, 1 ), tripoint_north_east, _( "North East" ),         _( "NE" ),  "9", "ITEMS_NE",        AIM_EAST},
+        { AIM_DRAGGED,   point( 25, 1 ), tripoint_zero,       _( "Grabbed Vehicle" ),    _( "GR" ),  "D", "ITEMS_DRAGGED_CONTAINER", AIM_DRAGGED},
+        { AIM_ALL,       point( 22, 3 ), tripoint_zero,       _( "Surrounding area" ),   _( "AL" ),  "A", "ITEMS_AROUND",    AIM_ALL},
+        { AIM_CONTAINER, point( 22, 1 ), tripoint_zero,       _( "Container" ),          _( "CN" ),  "C", "ITEMS_CONTAINER", AIM_CONTAINER},
+        { AIM_WORN,      point( 25, 3 ), tripoint_zero,       _( "Worn Items" ),         _( "WR" ),  "W", "ITEMS_WORN",      AIM_WORN}
     }
 } )
 {
@@ -282,7 +281,7 @@ void advanced_inventory::print_items( const advanced_inventory_pane &pane, bool 
             units::volume maxvolume = 0_ml;
             auto &s = squares[pane.get_area()];
             if( pane.get_area() == AIM_CONTAINER && s.get_container( pane.in_vehicle() ) != nullptr ) {
-                maxvolume = s.get_container( pane.in_vehicle() )->get_container_capacity();
+                maxvolume = s.get_container( pane.in_vehicle() )->get_total_capacity();
             } else if( pane.in_vehicle() ) {
                 maxvolume = s.veh->max_volume( s.vstor );
             } else {
@@ -820,7 +819,7 @@ bool advanced_inventory::move_all_items( bool nested_call )
 
     // Check some preconditions to quickly leave the function.
     size_t liquid_items = 0;
-    for( const advanced_inv_listitem elem : spane.items ) {
+    for( const advanced_inv_listitem &elem : spane.items ) {
         for( const item *elemit : elem.items ) {
             if( elemit->made_of_from_type( LIQUID ) && !elemit->is_frozen_liquid() ) {
                 liquid_items++;
@@ -920,7 +919,7 @@ bool advanced_inventory::move_all_items( bool nested_call )
         g->u.drop( dropped, g->u.pos() + darea.off );
     } else {
         if( dpane.get_area() == AIM_INVENTORY || dpane.get_area() == AIM_WORN ) {
-            g->u.assign_activity( ACT_PICKUP );
+            g->u.assign_activity( activity_id( "ACT_PICKUP" ) );
             g->u.activity.coords.push_back( g->u.pos() );
 
             item_stack::iterator stack_begin, stack_end;
@@ -945,7 +944,6 @@ bool advanced_inventory::move_all_items( bool nested_call )
                     continue;
                 }
                 if( filter_buckets && it->is_bucket_nonempty() ) {
-                    filtered_any_bucket = true;
                     continue;
                 }
                 if( spane.in_vehicle() ) {
@@ -986,7 +984,6 @@ bool advanced_inventory::move_all_items( bool nested_call )
                 stack_begin = targets.begin();
                 stack_end = targets.end();
             }
-
             // If moving to vehicle, silently filter buckets
             // Moving them would cause tons of annoying prompts or spills
             const bool filter_buckets = dpane.in_vehicle();
@@ -1187,13 +1184,8 @@ void advanced_inventory::start_activity( const aim_location destarea, const aim_
 
     const bool by_charges = sitem->items.front()->count_by_charges();
 
-    if( destarea == AIM_INVENTORY || destarea == AIM_WORN ) {
-        if( destarea == AIM_INVENTORY ) {
-            g->u.assign_activity( ACT_PICKUP );
-            g->u.activity.coords.push_back( g->u.pos() );
-        } else {
-            g->u.assign_activity( ACT_WEAR );
-        }
+    if( destarea == AIM_WORN ) {
+        g->u.assign_activity( ACT_WEAR );
 
         if( by_charges ) {
             if( from_vehicle ) {
@@ -1217,10 +1209,6 @@ void advanced_inventory::start_activity( const aim_location destarea, const aim_
             }
         }
     } else {
-        // Vehicle and map destinations are handled similarly.
-        // Stash the destination
-        const tripoint relative_destination = squares[destarea].off;
-
         // Find target items and quantities thereof for the new activity
         std::vector<item_location> target_items;
         std::vector<int> quantities;
@@ -1246,12 +1234,23 @@ void advanced_inventory::start_activity( const aim_location destarea, const aim_
             }
         }
 
-        g->u.assign_activity( player_activity( move_items_activity_actor(
-                target_items,
-                quantities,
-                to_vehicle,
-                relative_destination
-                                               ) ) );
+        if( destarea == AIM_INVENTORY ) {
+            g->u.assign_activity( player_activity( pickup_activity_actor(
+                    target_items,
+                    quantities,
+                    from_vehicle ? cata::nullopt : cata::optional<tripoint>( g->u.pos() )
+                                                   ) ) );
+        } else {
+            // Stash the destination
+            const tripoint relative_destination = squares[destarea].off;
+
+            g->u.assign_activity( player_activity( move_items_activity_actor(
+                    target_items,
+                    quantities,
+                    to_vehicle,
+                    relative_destination
+                                                   ) ) );
+        }
     }
 }
 
@@ -1347,6 +1346,10 @@ bool advanced_inventory::action_move_item( advanced_inv_listitem *sitem,
             }
         }
     } else {
+        if( destarea == AIM_INVENTORY && !g->u.can_stash( *sitem->items.front() ) ) {
+            popup( _( "You have no space for %s" ), sitem->items.front()->tname() );
+            return false;
+        }
         // from map/vehicle: start ACT_PICKUP or ACT_MOVE_ITEMS as necessary
         // Make sure advanced inventory is reopened after activity completion.
         do_return_entry();
@@ -1501,7 +1504,7 @@ void advanced_inventory::display()
             string_input_popup spopup;
             std::string filter = spane.filter;
             filter_edit = true;
-            spopup.window( spane.window, 4, w_height - 1, w_width / 2 - 4 )
+            spopup.window( spane.window, point( 4, w_height - 1 ), w_width / 2 - 4 )
             .max_length( 256 )
             .text( filter );
 
@@ -1604,7 +1607,7 @@ class query_destination_callback : public uilist_callback
         void draw_squares( const uilist *menu );
     public:
         query_destination_callback( advanced_inventory &adv_inv ) : _adv_inv( adv_inv ) {}
-        void select( int /*entnum*/, uilist *menu ) override {
+        void refresh( uilist *menu ) override {
             draw_squares( menu );
         }
 };
@@ -1613,8 +1616,11 @@ void query_destination_callback::draw_squares( const uilist *menu )
 {
     assert( menu->entries.size() >= 9 );
     int ofs = -25 - 4;
-    int sel = _adv_inv.screen_relative_location(
+    int sel = 0;
+    if( menu->selected >= 0 && static_cast<size_t>( menu->selected ) < menu->entries.size() ) {
+        sel = _adv_inv.screen_relative_location(
                   static_cast <aim_location>( menu->selected + 1 ) );
+    }
     for( int i = 1; i < 10; i++ ) {
         aim_location loc = _adv_inv.screen_relative_location( static_cast <aim_location>( i ) );
         std::string key = _adv_inv.get_location_key( loc );
@@ -1631,6 +1637,7 @@ void query_destination_callback::draw_squares( const uilist *menu )
         wprintz( menu->window, kcolor, "%s", key );
         wprintz( menu->window, bcolor, "%c", bracket[1] );
     }
+    wrefresh( menu->window );
 }
 
 bool advanced_inventory::query_destination( aim_location &def )
@@ -1705,7 +1712,7 @@ bool advanced_inventory::move_content( item &src_container, item &dest_container
         return false;
     }
 
-    item &src_contents = src_container.contents.front();
+    item &src_contents = src_container.contents.legacy_front();
 
     if( !src_contents.made_of( LIQUID ) ) {
         popup( _( "You can unload only liquids into target container." ) );
@@ -1719,16 +1726,9 @@ bool advanced_inventory::move_content( item &src_container, item &dest_container
         popup( err );
         return false;
     }
-    if( src_container.is_non_resealable_container() ) {
-        if( src_contents.charges > amount ) {
-            popup( _( "You can't partially unload liquids from unsealable container." ) );
-            return false;
-        }
-        src_container.on_contents_changed();
-    }
-    dest_container.fill_with( src_contents, amount );
+    dest_container.fill_with( *src_contents.type, amount );
 
-    uistate.adv_inv_container_content_type = dest_container.contents.front().typeId();
+    uistate.adv_inv_container_content_type = dest_container.contents.legacy_front().typeId();
     if( src_contents.charges <= 0 ) {
         src_container.contents.clear_items();
     }

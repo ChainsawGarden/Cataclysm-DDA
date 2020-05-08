@@ -4,14 +4,17 @@
 #include <utility>
 
 #include "activity_handlers.h" // put_into_vehicle_or_drop and drop_on_map
+#include "advanced_inv.h"
 #include "avatar.h"
 #include "character.h"
 #include "computer_session.h"
 #include "debug.h"
 #include "enums.h"
 #include "game.h"
+#include "gates.h"
 #include "iexamine.h"
 #include "item.h"
+#include "item_group.h"
 #include "item_location.h"
 #include "json.h"
 #include "line.h"
@@ -20,6 +23,7 @@
 #include "npc.h"
 #include "output.h"
 #include "pickup.h"
+#include "player.h"
 #include "player_activity.h"
 #include "point.h"
 #include "timed_event.h"
@@ -30,6 +34,180 @@ static const bionic_id bio_fingerhack( "bio_fingerhack" );
 static const skill_id skill_computer( "computer" );
 
 static const trait_id trait_ILLITERATE( "ILLITERATE" );
+
+static const std::string flag_USE_EAT_VERB( "USE_EAT_VERB" );
+
+static const mtype_id mon_zombie( "mon_zombie" );
+static const mtype_id mon_zombie_fat( "mon_zombie_fat" );
+static const mtype_id mon_zombie_rot( "mon_zombie_rot" );
+static const mtype_id mon_skeleton( "mon_skeleton" );
+static const mtype_id mon_zombie_crawler( "mon_zombie_crawler" );
+
+void dig_activity_actor::start( player_activity &act, Character & )
+{
+    act.moves_total = moves_total;
+    act.moves_left = moves_total;
+}
+
+void dig_activity_actor::do_turn( player_activity &, Character & )
+{
+    sfx::play_activity_sound( "tool", "shovel", sfx::get_heard_volume( location ) );
+    if( calendar::once_every( 1_minutes ) ) {
+        //~ Sound of a shovel digging a pit at work!
+        sounds::sound( location, 10, sounds::sound_t::activity, _( "hsh!" ) );
+    }
+}
+
+void dig_activity_actor::finish( player_activity &act, Character &who )
+{
+    const bool grave = g->m.ter( location ) == t_grave;
+
+    if( grave ) {
+        if( one_in( 10 ) ) {
+            static const std::array<mtype_id, 5> monids = { {
+                    mon_zombie, mon_zombie_fat,
+                    mon_zombie_rot, mon_skeleton,
+                    mon_zombie_crawler
+                }
+            };
+
+            g->place_critter_at( random_entry( monids ), byproducts_location );
+            g->m.furn_set( location, f_coffin_o );
+            who.add_msg_if_player( m_warning, _( "Something crawls out of the coffin!" ) );
+        } else {
+            g->m.spawn_item( location, "bone_human", rng( 5, 15 ) );
+            g->m.furn_set( location, f_coffin_c );
+        }
+        std::vector<item *> dropped = g->m.place_items( "allclothes", 50, location, location, false,
+                                      calendar::turn );
+        g->m.place_items( "grave", 25, location, location, false, calendar::turn );
+        g->m.place_items( "jewelry_front", 20, location, location, false, calendar::turn );
+        for( item * const &it : dropped ) {
+            if( it->is_armor() ) {
+                it->item_tags.insert( "FILTHY" );
+                it->set_damage( rng( 1, it->max_damage() - 1 ) );
+            }
+        }
+        g->events().send<event_type::exhumes_grave>( who.getID() );
+    }
+
+    g->m.ter_set( location, ter_id( result_terrain ) );
+
+    for( int i = 0; i < byproducts_count; i++ ) {
+        g->m.spawn_items( byproducts_location, item_group::items_from( byproducts_item_group,
+                          calendar::turn ) );
+    }
+
+    const int helpersize = g->u.get_num_crafting_helpers( 3 );
+    who.mod_stored_nutr( 5 - helpersize );
+    who.mod_thirst( 5 - helpersize );
+    who.mod_fatigue( 10 - ( helpersize * 2 ) );
+    if( grave ) {
+        who.add_msg_if_player( m_good, _( "You finish exhuming a grave." ) );
+    } else {
+        who.add_msg_if_player( m_good, _( "You finish digging the %s." ),
+                               g->m.ter( location ).obj().name() );
+    }
+
+    act.set_to_null();
+}
+
+void dig_activity_actor::serialize( JsonOut &jsout ) const
+{
+    jsout.start_object();
+
+    jsout.member( "moves", moves_total );
+    jsout.member( "location", location );
+    jsout.member( "result_terrain", result_terrain );
+    jsout.member( "byproducts_location", byproducts_location );
+    jsout.member( "byproducts_count", byproducts_count );
+    jsout.member( "byproducts_item_group", byproducts_item_group );
+
+    jsout.end_object();
+}
+
+std::unique_ptr<activity_actor> dig_activity_actor::deserialize( JsonIn &jsin )
+{
+    dig_activity_actor actor( 0, tripoint_zero,
+                              {}, tripoint_zero, 0, {} );
+
+    JsonObject data = jsin.get_object();
+
+    data.read( "moves", actor.moves_total );
+    data.read( "location", actor.location );
+    data.read( "result_terrain", actor.result_terrain );
+    data.read( "byproducts_location", actor.byproducts_location );
+    data.read( "byproducts_count", actor.byproducts_count );
+    data.read( "byproducts_item_group", actor.byproducts_item_group );
+
+    return actor.clone();
+}
+
+void dig_channel_activity_actor::start( player_activity &act, Character & )
+{
+    act.moves_total = moves_total;
+    act.moves_left = moves_total;
+}
+
+void dig_channel_activity_actor::do_turn( player_activity &, Character & )
+{
+    sfx::play_activity_sound( "tool", "shovel", sfx::get_heard_volume( location ) );
+    if( calendar::once_every( 1_minutes ) ) {
+        //~ Sound of a shovel digging a pit at work!
+        sounds::sound( location, 10, sounds::sound_t::activity, _( "hsh!" ) );
+    }
+}
+
+void dig_channel_activity_actor::finish( player_activity &act, Character &who )
+{
+
+    g->m.ter_set( location, ter_id( result_terrain ) );
+
+    for( int i = 0; i < byproducts_count; i++ ) {
+        g->m.spawn_items( byproducts_location, item_group::items_from( byproducts_item_group,
+                          calendar::turn ) );
+    }
+
+    const int helpersize = g->u.get_num_crafting_helpers( 3 );
+    who.mod_stored_nutr( 5 - helpersize );
+    who.mod_thirst( 5 - helpersize );
+    who.mod_fatigue( 10 - ( helpersize * 2 ) );
+    who.add_msg_if_player( m_good, _( "You finish digging up %s." ),
+                           g->m.ter( location ).obj().name() );
+
+    act.set_to_null();
+}
+
+void dig_channel_activity_actor::serialize( JsonOut &jsout ) const
+{
+    jsout.start_object();
+
+    jsout.member( "moves", moves_total );
+    jsout.member( "location", location );
+    jsout.member( "result_terrain", result_terrain );
+    jsout.member( "byproducts_location", byproducts_location );
+    jsout.member( "byproducts_count", byproducts_count );
+    jsout.member( "byproducts_item_group", byproducts_item_group );
+
+    jsout.end_object();
+}
+
+std::unique_ptr<activity_actor> dig_channel_activity_actor::deserialize( JsonIn &jsin )
+{
+    dig_channel_activity_actor actor( 0, tripoint_zero,
+                                      {}, tripoint_zero, 0, {} );
+
+    JsonObject data = jsin.get_object();
+
+    data.read( "moves", actor.moves_total );
+    data.read( "location", actor.location );
+    data.read( "result_terrain", actor.result_terrain );
+    data.read( "byproducts_location", actor.byproducts_location );
+    data.read( "byproducts_count", actor.byproducts_count );
+    data.read( "byproducts_item_group", actor.byproducts_item_group );
+
+    return actor.clone();
+}
 
 void hacking_activity_actor::start( player_activity &act, Character & )
 {
@@ -281,6 +459,70 @@ std::unique_ptr<activity_actor> move_items_activity_actor::deserialize( JsonIn &
     return actor.clone();
 }
 
+void pickup_activity_actor::do_turn( player_activity &, Character &who )
+{
+    // If we don't have target items bail out
+    if( target_items.empty() ) {
+        who.cancel_activity();
+        return;
+    }
+
+    // If the player moves while picking up (i.e.: in a moving vehicle) cancel
+    // the activity, only populate starting_pos when grabbing from the ground
+    if( starting_pos && *starting_pos != who.pos() ) {
+        who.cancel_activity();
+        who.add_msg_if_player( _( "Moving canceled auto-pickup." ) );
+        return;
+    }
+
+    // Auto_resume implies autopickup.
+    const bool autopickup = who.activity.auto_resume;
+
+    // False indicates that the player canceled pickup when met with some prompt
+    const bool keep_going = Pickup::do_pickup( target_items, quantities, autopickup );
+
+    // If there are items left we ran out of moves, so continue the activity
+    // Otherwise, we are done.
+    if( !keep_going || target_items.empty() ) {
+        who.cancel_activity();
+
+        if( who.get_value( "THIEF_MODE_KEEP" ) != "YES" ) {
+            who.set_value( "THIEF_MODE", "THIEF_ASK" );
+        }
+
+        if( !keep_going ) {
+            // The user canceled the activity, so we're done
+            // AIM might have more pickup activities pending, also cancel them.
+            // TODO: Move this to advanced inventory instead of hacking it in here
+            cancel_aim_processing();
+        }
+    }
+}
+
+void pickup_activity_actor::serialize( JsonOut &jsout ) const
+{
+    jsout.start_object();
+
+    jsout.member( "target_items", target_items );
+    jsout.member( "quantities", quantities );
+    jsout.member( "starting_pos", starting_pos );
+
+    jsout.end_object();
+}
+
+std::unique_ptr<activity_actor> pickup_activity_actor::deserialize( JsonIn &jsin )
+{
+    pickup_activity_actor actor( {}, {}, cata::nullopt );
+
+    JsonObject data = jsin.get_object();
+
+    data.read( "target_items", actor.target_items );
+    data.read( "quantities", actor.quantities );
+    data.read( "starting_pos", actor.starting_pos );
+
+    return actor.clone();
+}
+
 void migration_cancel_activity_actor::do_turn( player_activity &act, Character &who )
 {
     // Stop the activity
@@ -309,15 +551,110 @@ std::unique_ptr<activity_actor> migration_cancel_activity_actor::deserialize( Js
     return migration_cancel_activity_actor().clone();
 }
 
+void open_gate_activity_actor::start( player_activity &act, Character & )
+{
+    act.moves_total = moves_total;
+    act.moves_left = moves_total;
+}
+
+void open_gate_activity_actor::finish( player_activity &act, Character & )
+{
+    gates::open_gate( placement );
+    act.set_to_null();
+}
+
+void open_gate_activity_actor::serialize( JsonOut &jsout ) const
+{
+    jsout.start_object();
+
+    jsout.member( "moves", moves_total );
+    jsout.member( "placement", placement );
+
+    jsout.end_object();
+}
+
+std::unique_ptr<activity_actor> open_gate_activity_actor::deserialize( JsonIn &jsin )
+{
+    open_gate_activity_actor actor( 0, tripoint_zero );
+
+    JsonObject data = jsin.get_object();
+
+    data.read( "moves", actor.moves_total );
+    data.read( "placement", actor.placement );
+
+    return actor.clone();
+}
+
+void consume_activity_actor::start( player_activity &act, Character & )
+{
+    const int charges = std::max( loc->charges, 1 );
+    int volume = units::to_milliliter( loc->volume() ) / charges;
+    time_duration time = 0_seconds;
+    const bool eat_verb  = loc->has_flag( flag_USE_EAT_VERB );
+    if( eat_verb || loc->get_comestible()->comesttype == "FOOD" ) {
+        time = time_duration::from_seconds( volume / 5 ); //Eat 5 mL (1 teaspoon) per second
+    } else if( !eat_verb && loc->get_comestible()->comesttype == "DRINK" ) {
+        time = time_duration::from_seconds( volume / 15 ); //Drink 15 mL (1 tablespoon) per second
+    } else if( loc->is_medication() ) {
+        time = time_duration::from_seconds(
+                   30 ); //Medicine/drugs takes 30 seconds this is pretty arbitrary and should probable be broken up more but seems ok for a start
+    } else {
+        debugmsg( "Consumed something that was not food, drink or medicine/drugs" );
+    }
+
+    act.moves_total = to_moves<int>( time );
+    act.moves_left = to_moves<int>( time );
+}
+
+void consume_activity_actor::finish( player_activity &act, Character & )
+{
+    if( loc.where() == item_location::type::character ) {
+        g->u.consume( loc );
+
+    } else if( g->u.consume_item( *loc ) ) {
+        loc.remove_item();
+    }
+    if( g->u.get_value( "THIEF_MODE_KEEP" ) != "YES" ) {
+        g->u.set_value( "THIEF_MODE", "THIEF_ASK" );
+    }
+    act.set_to_null();
+}
+
+void consume_activity_actor::serialize( JsonOut &jsout ) const
+{
+    jsout.start_object();
+
+    jsout.member( "loc", loc );
+
+    jsout.end_object();
+}
+
+std::unique_ptr<activity_actor> consume_activity_actor::deserialize( JsonIn &jsin )
+{
+    item_location null;
+    consume_activity_actor actor( null );
+
+    JsonObject data = jsin.get_object();
+
+    data.read( "loc", actor.loc );
+
+    return actor.clone();
+}
+
 namespace activity_actors
 {
 
 // Please keep this alphabetically sorted
 const std::unordered_map<activity_id, std::unique_ptr<activity_actor>( * )( JsonIn & )>
 deserialize_functions = {
+    { activity_id( "ACT_CONSUME" ), &consume_activity_actor::deserialize },
+    { activity_id( "ACT_DIG" ), &dig_activity_actor::deserialize },
+    { activity_id( "ACT_DIG_CHANNEL" ), &dig_channel_activity_actor::deserialize },
     { activity_id( "ACT_HACKING" ), &hacking_activity_actor::deserialize },
     { activity_id( "ACT_MIGRATION_CANCEL" ), &migration_cancel_activity_actor::deserialize },
     { activity_id( "ACT_MOVE_ITEMS" ), &move_items_activity_actor::deserialize },
+    { activity_id( "ACT_OPEN_GATE" ), &open_gate_activity_actor::deserialize },
+    { activity_id( "ACT_PICKUP" ), &pickup_activity_actor::deserialize },
 };
 } // namespace activity_actors
 

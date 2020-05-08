@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "action.h"
+#include "activity_actor.h"
 #include "artifact.h"
 #include "avatar.h"
 #include "bodypart.h"
@@ -115,8 +116,6 @@ static const activity_id ACT_CHOP_TREE( "ACT_CHOP_TREE" );
 static const activity_id ACT_CHURN( "ACT_CHURN" );
 static const activity_id ACT_CLEAR_RUBBLE( "ACT_CLEAR_RUBBLE" );
 static const activity_id ACT_CRAFT( "ACT_CRAFT" );
-static const activity_id ACT_DIG( "ACT_DIG" );
-static const activity_id ACT_DIG_CHANNEL( "ACT_DIG_CHANNEL" );
 static const activity_id ACT_FILL_PIT( "ACT_FILL_PIT" );
 static const activity_id ACT_FISH( "ACT_FISH" );
 static const activity_id ACT_GAME( "ACT_GAME" );
@@ -153,7 +152,6 @@ static const efftype_id effect_cig( "cig" );
 static const efftype_id effect_contacts( "contacts" );
 static const efftype_id effect_corroding( "corroding" );
 static const efftype_id effect_crushed( "crushed" );
-static const efftype_id effect_cureall( "cureall" );
 static const efftype_id effect_datura( "datura" );
 static const efftype_id effect_dazed( "dazed" );
 static const efftype_id effect_dermatik( "dermatik" );
@@ -185,7 +183,6 @@ static const efftype_id effect_monster_armor( "monster_armor" );
 static const efftype_id effect_music( "music" );
 static const efftype_id effect_onfire( "onfire" );
 static const efftype_id effect_paincysts( "paincysts" );
-static const efftype_id effect_panacea( "panacea" );
 static const efftype_id effect_pet( "pet" );
 static const efftype_id effect_poison( "poison" );
 static const efftype_id effect_ridden( "ridden" );
@@ -208,6 +205,7 @@ static const efftype_id effect_teargas( "teargas" );
 static const efftype_id effect_teleglow( "teleglow" );
 static const efftype_id effect_tetanus( "tetanus" );
 static const efftype_id effect_tied( "tied" );
+static const efftype_id effect_took_antiasthmatic( "took_antiasthmatic" );
 static const efftype_id effect_took_anticonvulsant_visible( "took_anticonvulsant_visible" );
 static const efftype_id effect_took_flumed( "took_flumed" );
 static const efftype_id effect_took_prozac( "took_prozac" );
@@ -406,12 +404,6 @@ int iuse::sewage( player *p, item *it, bool, const tripoint & )
 int iuse::honeycomb( player *p, item *it, bool, const tripoint & )
 {
     g->m.spawn_item( p->pos(), "wax", 2 );
-    return it->type->charges_to_use();
-}
-
-int iuse::royal_jelly( player *p, item *it, bool, const tripoint & )
-{
-    p->add_effect( effect_cureall, 1_turns );
     return it->type->charges_to_use();
 }
 
@@ -843,10 +835,18 @@ int iuse::flu_vaccine( player *p, item *it, bool, const tripoint & )
 {
     p->add_msg_if_player( _( "You inject the vaccine." ) );
     p->add_msg_if_player( m_good, _( "You no longer need to fear the flu, at least for some time." ) );
-    p->add_effect( effect_flushot, 30_days, num_bp, true );
+    p->add_effect( effect_flushot, 24_weeks, num_bp, false );
     p->mod_pain( 3 );
     item syringe( "syringe", it->birthday() );
     p->i_add( syringe );
+    return it->type->charges_to_use();
+}
+
+int iuse::antiasthmatic( player *p, item *it, bool, const tripoint & )
+{
+    p->add_msg_if_player( m_good,
+                          _( "You no longer need to worry about asthma attacks, at least for a while." ) );
+    p->add_effect( effect_took_antiasthmatic, 1_days, num_bp, true );
     return it->type->charges_to_use();
 }
 
@@ -1032,7 +1032,7 @@ int iuse::blech( player *p, item *it, bool, const tripoint & )
         p->add_msg_if_player( m_bad, _( "Blech, that burns your throat!" ) );
         p->mod_pain( rng( 32, 64 ) );
         p->add_effect( effect_poison, 1_hours );
-        p->apply_damage( nullptr, bp_torso, rng( 4, 12 ) );
+        p->apply_damage( nullptr, bodypart_id( "torso" ), rng( 4, 12 ) );
         p->vomit();
     }
     return it->type->charges_to_use();
@@ -1586,7 +1586,7 @@ static int petfood( player &p, item &it, Petfood animal_food_type )
         switch( animal_food_type ) {
             case DOGFOOD:
                 if( mon.type->id == mon_dog_thing ) {
-                    p.deal_damage( &mon, bp_hand_r, damage_instance( DT_CUT, rng( 1, 10 ) ) );
+                    p.deal_damage( &mon, bodypart_id( "hand_r" ), damage_instance( DT_CUT, rng( 1, 10 ) ) );
                     p.add_msg_if_player( m_bad, _( "You want to feed it the dog food, but it bites your fingers!" ) );
                     if( one_in( 5 ) ) {
                         p.add_msg_if_player(
@@ -1950,7 +1950,7 @@ int iuse::extinguisher( player *p, item *it, bool, const tripoint & )
             if( g->u.sees( critter ) ) {
                 p->add_msg_if_player( _( "The %s is frozen!" ), critter.name() );
             }
-            critter.apply_damage( p, bp_torso, rng( 20, 60 ) );
+            critter.apply_damage( p, bodypart_id( "torso" ), rng( 20, 60 ) );
             critter.set_speed_base( critter.get_speed_base() / 2 );
         }
     }
@@ -2106,8 +2106,10 @@ int iuse::water_purifier( player *p, item *it, bool, const tripoint & )
         p->add_msg_if_player( m_info, _( "You cannot do that while mounted." ) );
         return 0;
     }
-    auto obj = g->inv_map_splice( []( const item & e ) {
-        return !e.contents.empty() && e.contents.front().typeId() == "water";
+    item_location obj = g->inv_map_splice( []( const item & e ) {
+        return !e.contents.empty() && e.has_item_with( []( const item & it ) {
+            return it.typeId() == "water";
+        } );
     }, _( "Purify what?" ), 1, _( "You don't have water to purify." ) );
 
     if( !obj ) {
@@ -2115,16 +2117,24 @@ int iuse::water_purifier( player *p, item *it, bool, const tripoint & )
         return 0;
     }
 
-    item &liquid = obj->contents.front();
-    if( !it->units_sufficient( *p, liquid.charges ) ) {
+    const std::vector<item *> liquids = obj->items_with( []( const item & it ) {
+        return it.typeId() == "water";
+    } );
+    int charges_of_water = 0;
+    for( const item *water : liquids ) {
+        charges_of_water += water->charges;
+    }
+    if( !it->units_sufficient( *p, charges_of_water ) ) {
         p->add_msg_if_player( m_info, _( "That volume of water is too large to purify." ) );
         return 0;
     }
 
     p->moves -= to_moves<int>( 2_seconds );
 
-    liquid.convert( "water_clean" ).poison = 0;
-    return liquid.charges;
+    for( item *water : liquids ) {
+        water->convert( "water_clean" ).poison = 0;
+    }
+    return charges_of_water;
 }
 
 int iuse::radio_off( player *p, item *it, bool, const tripoint & )
@@ -2779,14 +2789,14 @@ int iuse::dig( player *p, item *it, bool t, const tripoint & )
     digging_moves_and_byproducts moves_and_byproducts = dig_pit_moves_and_byproducts( p, it,
             can_deepen, false );
 
-    player_activity act( ACT_DIG, moves_and_byproducts.moves, -1,
-                         p->get_item_position( it ) );
-    act.placement = dig_point;
-    act.values.emplace_back( moves_and_byproducts.spawn_count );
-    act.str_values.emplace_back( moves_and_byproducts.byproducts_item_group );
-    act.str_values.emplace_back( moves_and_byproducts.result_terrain.id().str() );
-    act.coords.emplace_back( deposit_point );
-    p->assign_activity( act );
+    p->assign_activity( player_activity( dig_activity_actor(
+            moves_and_byproducts.moves,
+            dig_point,
+            moves_and_byproducts.result_terrain.id().str(),
+            deposit_point,
+            moves_and_byproducts.spawn_count,
+            moves_and_byproducts.byproducts_item_group
+                                         ) ) );
 
     return it->type->charges_to_use();
 }
@@ -2846,15 +2856,14 @@ int iuse::dig_channel( player *p, item *it, bool t, const tripoint & )
     digging_moves_and_byproducts moves_and_byproducts = dig_pit_moves_and_byproducts( p, it, false,
             true );
 
-    player_activity act( ACT_DIG_CHANNEL, moves_and_byproducts.moves, -1,
-                         p->get_item_position( it ) );
-    act.placement = dig_point;
-    act.values.emplace_back( moves_and_byproducts.spawn_count );
-    act.str_values.emplace_back( moves_and_byproducts.byproducts_item_group );
-    act.str_values.emplace_back( moves_and_byproducts.result_terrain.id().str() );
-    act.coords.emplace_back( deposit_point );
-    p->assign_activity( act );
-
+    p->assign_activity( player_activity( dig_channel_activity_actor(
+            moves_and_byproducts.moves,
+            dig_point,
+            moves_and_byproducts.result_terrain.id().str(),
+            deposit_point,
+            moves_and_byproducts.spawn_count,
+            moves_and_byproducts.byproducts_item_group
+                                         ) ) );
     return it->type->charges_to_use();
 }
 
@@ -4009,7 +4018,7 @@ int iuse::tazer( player *p, item *it, bool, const tripoint &pos )
     } else {
         // TODO: Maybe - Execute an attack and maybe zap something other than torso
         // Maybe, because it's torso (heart) that fails when zapped with electricity
-        int dam = target->deal_damage( p, bp_torso, damage_instance( DT_ELECTRIC, rng( 5,
+        int dam = target->deal_damage( p, bodypart_id( "torso" ), damage_instance( DT_ELECTRIC, rng( 5,
                                        25 ) ) ).total_damage();
         if( dam > 0 ) {
             p->add_msg_player_or_npc( m_good,
@@ -4671,7 +4680,7 @@ int iuse::blood_draw( player *p, item *it, bool, const tripoint & )
 
     if( acid_blood ) {
         item acid( "acid", calendar::turn );
-        it->put_in( acid );
+        it->put_in( acid, item_pocket::pocket_type::CONTAINER );
         if( one_in( 3 ) ) {
             if( it->inc_damage( DT_ACID ) ) {
                 p->add_msg_if_player( m_info, _( "…but acidic blood melts the %s, destroying it!" ),
@@ -4688,7 +4697,7 @@ int iuse::blood_draw( player *p, item *it, bool, const tripoint & )
         return it->type->charges_to_use();
     }
 
-    it->put_in( blood );
+    it->put_in( blood, item_pocket::pocket_type::CONTAINER );
     return it->type->charges_to_use();
 }
 
@@ -5397,7 +5406,7 @@ int iuse::artifact( player *p, item *it, bool, const tripoint & )
 
             case AEA_HURTALL:
                 for( monster &critter : g->all_monsters() ) {
-                    critter.apply_damage( nullptr, bp_torso, rng( 0, 5 ) );
+                    critter.apply_damage( nullptr, bodypart_id( "torso" ), rng( 0, 5 ) );
                 }
                 break;
 
@@ -7440,9 +7449,9 @@ static extended_photo_def photo_def_for_camera_point( const tripoint &aim_point,
 
     if( g->get_levz() >= 0 && need_store_weather ) {
         photo_text += "\n\n";
-        if( is_sunrise_now( calendar::turn ) ) {
+        if( is_dawn( calendar::turn ) ) {
             photo_text += _( "It is <color_yellow>sunrise</color>. " );
-        } else if( is_sunset_now( calendar::turn ) ) {
+        } else if( is_dusk( calendar::turn ) ) {
             photo_text += _( "It is <color_light_red>sunset</color>. " );
         } else if( is_night( calendar::turn ) ) {
             photo_text += _( "It is <color_dark_gray>night</color>. " );
@@ -7942,8 +7951,8 @@ int iuse::ehandcuffs( player *p, item *it, bool t, const tripoint &pos )
                 } else {
                     add_msg( m_bad, _( "Ouch, the cuffs shock you!" ) );
 
-                    p->apply_damage( nullptr, bp_arm_l, rng( 0, 2 ) );
-                    p->apply_damage( nullptr, bp_arm_r, rng( 0, 2 ) );
+                    p->apply_damage( nullptr, bodypart_id( "arm_l" ), rng( 0, 2 ) );
+                    p->apply_damage( nullptr, bodypart_id( "arm_r" ), rng( 0, 2 ) );
                     p->mod_pain( rng( 2, 5 ) );
 
                 }
@@ -8052,7 +8061,7 @@ int iuse::radiocar( player *p, item *it, bool, const tripoint & )
                 p->moves -= to_moves<int>( 3_seconds );
                 p->add_msg_if_player( _( "You armed your RC car with %s." ),
                                       put.tname() );
-                it->put_in( p->i_rem( &put ) );
+                it->put_in( p->i_rem( &put ), item_pocket::pocket_type::CONTAINER );
             } else if( !put.has_flag( "RADIOCARITEM" ) ) {
                 p->add_msg_if_player( _( "RC car with %s?  How?" ),
                                       put.tname() );
@@ -8540,7 +8549,7 @@ int iuse::autoclave( player *p, item *it, bool t, const tripoint &pos )
 
             if( empty ) {
                 const item *cbm = to_sterile.get_item();
-                it->put_in( *cbm );
+                it->put_in( *cbm, item_pocket::pocket_type::CONTAINER );
                 to_sterile.remove_item();
             }
 
@@ -8592,7 +8601,7 @@ int iuse::multicooker( player *p, item *it, bool t, const tripoint &pos )
             it->active = false;
             it->erase_var( "DISH" );
             it->erase_var( "COOKTIME" );
-            it->put_in( meal );
+            it->put_in( meal, item_pocket::pocket_type::CONTAINER );
 
             //~ sound of a multi-cooker finishing its cycle!
             sounds::sound( pos, 8, sounds::sound_t::alarm, _( "ding!" ), true, "misc", "ding" );
@@ -9614,7 +9623,7 @@ int iuse::wash_items( player *p, bool soft_items, bool hard_items )
     const inventory &crafting_inv = p->crafting_inventory();
 
     auto is_liquid = []( const item & it ) {
-        return it.made_of( LIQUID ) || it.contents_made_of( LIQUID );
+        return it.made_of( LIQUID );
     };
     int available_water = std::max(
                               crafting_inv.charges_of( "water", INT_MAX, is_liquid ),
@@ -9758,16 +9767,6 @@ int iuse::strong_antibiotic( player *p, item *it, bool, const tripoint & )
     }
     p->add_effect( effect_strong_antibiotic, 12_hours );
     p->add_effect( effect_strong_antibiotic_visible, rng( 9_hours, 15_hours ) );
-    return it->type->charges_to_use();
-}
-
-int iuse::panacea( player *p, item *it, bool, const tripoint & )
-{
-    p->add_msg_if_player( _( "You take some %s." ), it->tname() );
-    if( !p->has_effect( effect_panacea ) ) {
-        p->add_msg_if_player( m_good, _( "You feel AMAZING!" ) );
-    }
-    p->add_effect( effect_panacea, 1_minutes );
     return it->type->charges_to_use();
 }
 
